@@ -20,7 +20,7 @@
 #include "esp_gap_bt_api.h"
 #include "esp_bt_device.h"
 #include "esp_spp_api.h"
-
+#include "esp32/clk.h"
 #include "time.h"
 #include "sys/time.h"
 
@@ -33,7 +33,8 @@
 
 static const esp_spp_mode_t esp_spp_mode = ESP_SPP_MODE_CB;
 
-static struct timeval time_new, time_old;
+// static struct timeval time_new, time_old;
+static uint64_t clk_rtc_start_time, clk_rtc_stop_time, time_interval;
 static long data_num = 0;
 
 static const esp_spp_sec_t sec_mask = ESP_SPP_SEC_AUTHENTICATE;
@@ -41,14 +42,10 @@ static const esp_spp_role_t role_slave = ESP_SPP_ROLE_SLAVE;
 
 static void print_speed(void)
 {
-    float time_old_s = time_old.tv_sec + time_old.tv_usec / 1000000.0;
-    float time_new_s = time_new.tv_sec + time_new.tv_usec / 1000000.0;
-    float time_interval = time_new_s - time_old_s;
-    float speed = data_num * 8 / time_interval / 1000.0;
-    ESP_LOGI(SPP_TAG, "speed(%fs ~ %fs): %f kbit/s" , time_old_s, time_new_s, speed);
+    float speed = data_num * 8 / (float)time_interval;
+    ESP_LOGI(SPP_TAG, "speed(%lld ~ %lld): %f kbit/s" , clk_rtc_start_time, clk_rtc_stop_time, speed);
     data_num = 0;
-    time_old.tv_sec = time_new.tv_sec;
-    time_old.tv_usec = time_new.tv_usec;
+    clk_rtc_start_time = clk_rtc_stop_time;
 }
 
 static void esp_spp_cb(esp_spp_cb_event_t event, esp_spp_cb_param_t *param)
@@ -81,9 +78,11 @@ static void esp_spp_cb(esp_spp_cb_event_t event, esp_spp_cb_param_t *param)
                  param->data_ind.len, param->data_ind.handle);
         esp_log_buffer_hex("",param->data_ind.data,param->data_ind.len);
 #else
-        gettimeofday(&time_new, NULL);
+        clk_rtc_stop_time = esp_clk_rtc_time();
+        time_interval = clk_rtc_stop_time - clk_rtc_start_time;
+        // gettimeofday(&time_new, NULL);
         data_num += param->data_ind.len;
-        if (time_new.tv_sec - time_old.tv_sec >= 3) {
+        if (time_interval >= 3000000) {
             print_speed();
         }
 #endif
@@ -96,11 +95,26 @@ static void esp_spp_cb(esp_spp_cb_event_t event, esp_spp_cb_param_t *param)
         break;
     case ESP_SPP_SRV_OPEN_EVT:
         ESP_LOGI(SPP_TAG, "ESP_SPP_SRV_OPEN_EVT");
-        gettimeofday(&time_old, NULL);
+        clk_rtc_start_time = esp_clk_rtc_time();
+        // gettimeofday(&time_old, NULL);
         break;
     default:
         break;
     }
+}
+
+void test1(void *arg){
+    struct timeval tv;
+    while(1){
+        gettimeofday(&tv, NULL);
+        ESP_LOGI("TEST", "Get time: sec = %u", (uint32_t)tv.tv_sec);
+        vTaskDelay(pdMS_TO_TICKS(5000));
+    }
+}
+
+void test_task_create(void)
+{
+    xTaskCreate(test1, "test_task", 2*1024, NULL, 10, NULL);
 }
 
 void esp_bt_gap_cb(esp_bt_gap_cb_event_t event, esp_bt_gap_cb_param_t *param)
@@ -207,6 +221,8 @@ void app_main(void)
     esp_bt_io_cap_t iocap = ESP_BT_IO_CAP_IO;
     esp_bt_gap_set_security_param(param_type, &iocap, sizeof(uint8_t));
 #endif
+
+    test_task_create();
 
     /*
      * Set default parameters for Legacy Pairing
